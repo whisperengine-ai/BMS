@@ -4,8 +4,9 @@ use axum::{
 };
 use bms_core::{SnapshotManager, DEFAULT_SNAPSHOT_INTERVAL};
 use bms_storage::BmsRepository;
-use bms_vector::VectorStore;
+use bms_vector::EmbeddingGenerator;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
@@ -32,8 +33,12 @@ async fn main() -> anyhow::Result<()> {
     let repository = BmsRepository::new(&db_path).await?;
     info!("Database initialized at {}", db_path);
 
-    // Initialize vector store
-    let vector_store = VectorStore::new();
+    // Initialize embedding generator
+    // Design note: vectors are search metadata, not canonical storage
+    // Embeddings computed on-demand during search, cached in memory
+    let embedding_generator = EmbeddingGenerator::new()
+        .map_err(|e| anyhow::anyhow!("Failed to init embedding generator: {}", e))?;
+    info!("Embedding generator initialized");
 
     // Initialize snapshot manager
     let snapshot_manager = SnapshotManager::new(DEFAULT_SNAPSHOT_INTERVAL);
@@ -41,7 +46,8 @@ async fn main() -> anyhow::Result<()> {
     // Create shared state
     let state = Arc::new(AppState {
         repository,
-        vector_store,
+        embedding_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        embedding_generator: tokio::sync::Mutex::new(embedding_generator),
         snapshot_manager,
     });
 
@@ -53,7 +59,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/verify/:coord_id", get(handlers::verify_chain))
         .route("/snapshot/:coord_id", post(handlers::create_snapshot))
         .route("/coords", get(handlers::list_coordinates))
-        .route("/stats", get(handlers::get_stats))
+    .route("/stats", get(handlers::get_stats))
+    .route("/search", post(handlers::search))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

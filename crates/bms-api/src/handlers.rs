@@ -7,11 +7,12 @@ use bms_core::{
     types::*, CoordinateGenerator, DeltaEngine, MerkleChain,
 };
 use serde::{Deserialize, Serialize};
+use sha3::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::info;
 
-use crate::state::AppState;
+use crate::state::{AppState, CachedEmbedding};
 
 type ApiResult<T> = std::result::Result<T, AppError>;
 
@@ -95,6 +96,13 @@ pub async fn store_state(
         delta_hash.clone()
     };
 
+    // Prepare author for delta (unused now but kept for future telic coherence)
+    let _author_name_for_metadata = req
+        .author
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_string();
+
     // Create delta
     let delta = Delta {
         id: delta_id.clone(),
@@ -106,11 +114,15 @@ pub async fn store_state(
         ops,
         created_at: chrono::Utc::now(),
         tags: None,
-        author: req.author,
+        author: req.author.clone(),
     };
 
     // Store delta
     app.repository.insert_delta(&delta).await?;
+
+    // Note: Design alignment - we do NOT generate/store embeddings here
+    // Vectors are search metadata (ephemeral), not canonical storage
+    // Embeddings are computed on-demand during search and cached
 
     // Check if snapshot needed
     let mut snapshot_created = false;
@@ -133,6 +145,190 @@ pub async fn store_state(
 }
 
 #[derive(Debug, Deserialize)]
+pub struct SearchRequest {
+    pub query: String,
+    pub limit: Option<usize>,
+    pub author: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub min_score: Option<f32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SearchResponseItem {
+    pub coord_id: String,
+    pub score: f32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SearchResponse {
+    pub results: Vec<SearchResponseItem>,
+}
+
+/// Semantic search endpoint
+/// Design: builds index on-demand from coordinate heads, caches embeddings by head hash
+pub async fn search(
+    State(app): State<Arc<AppState>>,
+    Json(req): Json<SearchRequest>,
+) -> ApiResult<Json<SearchResponse>> {
+    info!("Performing semantic search: query={}, limit={}", req.query, req.limit.unwrap_or(10));
+
+    // Generate embedding for query
+    let query_embedding = {
+        let mut generator = app.embedding_generator.lock().await;
+        generator
+            .generate(&req.query)
+            .map_err(|e| AppError::BmsError(bms_core::error::BmsError::Other(format!(
+                "Embedding error: {}",
+                e
+            ))))?
+    };
+
+    // Get all coordinates from DB
+    let coords = app.repository.list_coordinates(None).await?;
+    info!("Found {} coordinates to index", coords.len());
+
+    // Build or update in-memory index
+    let mut cache = app.embedding_cache.lock().await;
+    let mut coord_embeddings: Vec<(bms_core::CoordId, Vec<f32>, String, chrono::DateTime<chrono::Utc>)> = Vec::new();
+
+    for coord in coords {
+        // Filter by author if specified
+        if let Some(ref filter_author) = req.author {
+            // Get latest delta to check author
+            let deltas = app.repository.get_deltas(&coord.id).await?;
+            if let Some(last_delta) = deltas.last() {
+                if last_delta.author.as_deref() != Some(filter_author) {
+                    continue;
+                }
+            }
+        }
+
+        // Reconstruct head state
+        let deltas = app.repository.get_deltas(&coord.id).await?;
+        if deltas.is_empty() {
+            continue; // Skip empty coordinates
+        }
+
+        let head_state = if let Some(snapshot) = app.repository.get_latest_snapshot(&coord.id).await? {
+            bms_core::SnapshotManager::reconstruct(&snapshot, &deltas[..])?
+        } else {
+            let mut state = serde_json::json!({});
+            for delta in &deltas {
+                bms_core::DeltaEngine::apply_delta(&mut state, &delta.ops)?;
+            }
+            state
+        };
+
+        // Compute hash of head state for cache key
+        let head_hash = format!("{:x}", sha3::Sha3_256::digest(
+            serde_json::to_string(&head_state).unwrap_or_default().as_bytes()
+        ));
+
+        // Check cache or generate embedding
+        let embedding = if let Some(cached) = cache.get(&coord.id) {
+            if cached.head_hash == head_hash {
+                // Cache hit
+                cached.embedding.clone()
+            } else {
+                // Cache miss - head changed, regenerate
+                let mut generator = app.embedding_generator.lock().await;
+                let emb = generator
+                    .generate_from_state(&head_state)
+                    .map_err(|e| AppError::BmsError(bms_core::error::BmsError::Other(format!(
+                        "Embedding error: {}",
+                        e
+                    ))))?;
+                
+                // Update cache
+                cache.insert(coord.id.clone(), CachedEmbedding {
+                    head_hash: head_hash.clone(),
+                    embedding: emb.clone(),
+                    author: deltas.last().and_then(|d| d.author.clone()),
+                    created_at: chrono::Utc::now(),
+                });
+                emb
+            }
+        } else {
+            // Not in cache, generate
+            let mut generator = app.embedding_generator.lock().await;
+            let emb = generator
+                .generate_from_state(&head_state)
+                .map_err(|e| AppError::BmsError(bms_core::error::BmsError::Other(format!(
+                    "Embedding error: {}",
+                    e
+                ))))?;
+            
+            // Add to cache
+            cache.insert(coord.id.clone(), CachedEmbedding {
+                head_hash: head_hash.clone(),
+                embedding: emb.clone(),
+                author: deltas.last().and_then(|d| d.author.clone()),
+                created_at: chrono::Utc::now(),
+            });
+            emb
+        };
+
+        let created_at = deltas.last().map(|d| d.created_at).unwrap_or_else(chrono::Utc::now);
+        coord_embeddings.push((coord.id.clone(), embedding, head_hash, created_at));
+    }
+
+    // Drop cache lock before heavy computation
+    drop(cache);
+
+    info!("Indexed {} coordinate embeddings", coord_embeddings.len());
+
+    // Compute cosine similarity scores
+    let mut results: Vec<(bms_core::CoordId, f32)> = coord_embeddings
+        .iter()
+        .map(|(coord_id, embedding, _, _)| {
+            let score = cosine_similarity(&query_embedding, embedding);
+            (coord_id.clone(), score)
+        })
+        .collect();
+
+    // Filter by min_score if provided
+    if let Some(min_score) = req.min_score {
+        results.retain(|(_, score)| *score >= min_score);
+    }
+
+    // Sort by score descending
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Take top k
+    let limit = req.limit.unwrap_or(10);
+    results.truncate(limit);
+
+    let items: Vec<SearchResponseItem> = results
+        .into_iter()
+        .map(|(coord_id, score)| SearchResponseItem {
+            coord_id: coord_id.0,
+            score,
+        })
+        .collect();
+
+    info!("Returning {} search results", items.len());
+
+    Ok(Json(SearchResponse { results: items }))
+}
+
+/// Compute cosine similarity between two vectors
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    
+    let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let magnitude_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let magnitude_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    
+    if magnitude_a == 0.0 || magnitude_b == 0.0 {
+        return 0.0;
+    }
+    
+    dot_product / (magnitude_a * magnitude_b)
+}
+
+#[derive(Debug, Deserialize)]
 pub struct RecallQuery {
     pub delta_id: Option<String>,
 }
@@ -148,7 +344,7 @@ pub struct RecallResponse {
 pub async fn recall_state(
     State(app): State<Arc<AppState>>,
     Path(coord_id_str): Path<String>,
-    Query(query): Query<RecallQuery>,
+    Query(_query): Query<RecallQuery>,
 ) -> ApiResult<Json<RecallResponse>> {
     let coord_id = CoordId(coord_id_str);
     info!("Recalling state for coordinate: {}", coord_id);

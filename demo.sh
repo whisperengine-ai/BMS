@@ -47,6 +47,14 @@ echo "8. Getting storage statistics..."
 cargo run --release --bin bms -- --db-path demo.db stats
 echo
 
+echo "9. Semantic search (CLI local index)..."
+echo "   Query: 'Hello World'"
+cargo run --release --bin bms -- --db-path demo.db search "Hello World" --limit 5 --min-score 0.2
+echo
+echo "   Query: 'active'"
+cargo run --release --bin bms -- --db-path demo.db search "active" --limit 5
+echo
+
 echo "=== Demo Complete! ==="
 echo "Database saved at: demo.db"
 echo "You can explore it further with: cargo run --bin bms -- --db-path demo.db <command>"

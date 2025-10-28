@@ -24,6 +24,23 @@ chroma/
 qdrant_data/
 snapshots/
 
+# Caches
+.cache/
+cache/
+.hf_cache/
+.fastembed_cache/
+.fastembed_cache
+.huggingface/
+.ccache/
+.direnv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+npm-cache/
+.pnpm-store/
+fastembed_cache/
+
 # Editor and IDE files
 .vscode/
 !.vscode/settings.json
@@ -58,6 +75,7 @@ Desktop.ini
 *.key
 *.pem
 secrets/
+.envrc
 
 # Test and coverage artifacts
 *.profraw
@@ -108,3 +126,6 @@ docker-compose.override.yml
 *.zip
 dist/
 releases/
+
+# Node/JS
+node_modules/

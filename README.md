@@ -27,9 +27,9 @@ BMS stores the **telic act of choosing** which state matters, using:
 │  │  bms-core   │  │ bms-storage  │  │  bms-vector  │  │
 │  │             │  │              │  │              │  │
 │  │ • Canonical │  │ • SQLite KV  │  │ • Embeddings │  │
-│  │ • Coords    │  │ • Schema     │  │ • Search     │  │
-│  │ • Deltas    │  │ • Repository │  │ • (Future)   │  │
-│  │ • Merkle    │  │              │  │              │  │
+│  │ • Coords    │  │ • Schema     │  │ • Embeddings │  │
+│  │ • Deltas    │  │ • Repository │  │ • On-demand  │  │
+│  │ • Merkle    │  │              │  │ • Cache      │  │
 │  │ • Snapshots │  │              │  │              │  │
 │  └─────────────┘  └──────────────┘  └──────────────┘  │
 │                                                         │
@@ -46,10 +46,10 @@ BMS stores the **telic act of choosing** which state matters, using:
 ## 📦 Workspace Structure
 
 - **bms-core**: Core primitives (canonical JSON, coordinates, deltas, Merkle chains, snapshots)
-- **bms-storage**: SQLite persistence layer
-- **bms-vector**: Vector search integration (placeholder for Qdrant)
-- **bms-api**: REST API server (Axum)
-- **bms-cli**: Command-line interface
+- **bms-storage**: SQLite persistence layer with coordinate/delta/snapshot tables
+- **bms-vector**: Embedding generation (FastEmbed) for semantic search
+- **bms-api**: REST API server (Axum) with on-demand vector indexing
+- **bms-cli**: Command-line interface with local search fallback
 
 ## 🚀 Quick Start
 
@@ -139,6 +139,17 @@ curl -X POST http://localhost:3000/snapshot/<COORD_ID>
 curl http://localhost:3000/coords
 ```
 
+### Search (Semantic)
+```bash
+curl -X POST http://localhost:3000/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Hello World",
+    "limit": 5,
+    "min_score": 0.2
+  }'
+```
+
 ### Get Statistics
 ```bash
 curl http://localhost:3000/stats
@@ -197,11 +208,18 @@ cargo run --bin bms-api
 - [x] Snapshot management
 - [x] SQLite storage
 
-### Phase 2: API & Search (In Progress)
+### Phase 2: API & Search ✅
 - [x] REST API with Axum
-- [x] Basic endpoints (store, recall, verify)
-- [ ] Vector search integration
-- [ ] Embedding generation
+- [x] Basic endpoints (store, recall, verify, search)
+- [x] Vector search (on-demand, in-memory)
+- [x] Embedding generation (FastEmbed)
+
+**Vector Search Design**:
+- Embeddings are **search metadata**, not canonical storage
+- Generated on-demand during `/search` calls
+- Cached in-memory by coordinate head hash
+- No persistent vector storage in POC (design allows optional ChromaDB for production)
+- Follows BMS_DESIGN.txt: "Store vectors for coord heads... Do not store canonical chain data in Chroma"
 
 ### Phase 3: Benchmarking (Planned)
 - [ ] Performance testing suite
@@ -251,6 +269,39 @@ chain_hash = SHA3-256(parent_hash + current_delta_hash)
 state = snapshot.state
 for delta in forward_deltas:
     apply(delta.ops, state)
+```
+
+### Vector Search Architecture
+
+**Design Philosophy** (per BMS_DESIGN.txt):
+- Vectors are **search metadata**, not canonical storage
+- Canonical storage = deltas + snapshots in KV/Object store (deterministic, verifiable)
+- Vector index = ephemeral search accelerator (computed on-demand)
+
+**POC Implementation**:
+1. **No persistence during `/store`**: Only deltas/snapshots are written to SQLite
+2. **On-demand indexing**: `/search` reconstructs all coordinate heads, generates embeddings
+3. **In-memory cache**: Embeddings cached by head state hash (automatic invalidation on updates)
+4. **Cosine similarity**: Simple in-memory search with configurable min_score threshold
+5. **Future**: Optional ChromaDB+HNSW backend for production scale (feature-flagged)
+
+**Benefits**:
+- Maintains design purity: "telic act of choosing" is in deltas, not embeddings
+- Zero storage overhead for vectors in POC
+- Perfect for edge deployment (Raspberry Pi 5)
+- Embeddings always fresh (no drift between canonical state and vectors)
+
+**Search Flow**:
+```
+Query → Generate embedding
+      → List all coordinates from SQLite
+      → For each coord:
+          - Reconstruct head state
+          - Check cache by head_hash
+          - Generate embedding if cache miss
+      → Cosine similarity ranking
+      → Filter by min_score
+      → Return top-k coord_ids
 ```
 
 ## 🐛 Troubleshooting

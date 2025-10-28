@@ -13,5 +13,6 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
-qdrant-client = { workspace = true }
+fastembed = { workspace = true }
 tracing = { workspace = true }
+chrono = { workspace = true }

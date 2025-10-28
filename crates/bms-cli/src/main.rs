@@ -1,9 +1,10 @@
 use anyhow::Result;
-use bms_core::{types::*, CoordinateGenerator, DeltaEngine};
+use bms_core::{types::*, CoordinateGenerator, DeltaEngine, SnapshotManager};
 use bms_storage::BmsRepository;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use tracing::info;
+use bms_vector::{EmbeddingGenerator, InMemoryVectorStore, VectorConfig, VectorMetadata, SearchFilter as VecSearchFilter, VectorStore};
 
 #[derive(Parser)]
 #[command(name = "bms")]
@@ -50,6 +51,24 @@ enum Commands {
 
     /// Initialize database
     Init,
+
+    /// Semantic search
+    Search {
+        /// Query text
+        query: String,
+        /// Max results
+        #[arg(short, long, default_value_t = 10)]
+        limit: usize,
+        /// Minimum score filter
+        #[arg(long)]
+        min_score: Option<f32>,
+        /// Author filter
+        #[arg(long)]
+        author: Option<String>,
+        /// Tags filter (comma-separated)
+        #[arg(long)]
+        tags: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -193,6 +212,68 @@ async fn main() -> Result<()> {
 
         Commands::Init => {
             println!("Database initialized at: {}", cli.db_path);
+        }
+
+        Commands::Search { query, limit, min_score, author, tags } => {
+            // If API URL is provided, call API; else local fallback
+            if let Ok(api_url) = std::env::var("BMS_API_URL") {
+                let url = format!("{}/search", api_url.trim_end_matches('/'));
+                let client = reqwest::Client::new();
+                let tags_vec = tags.as_ref().map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect::<Vec<_>>() );
+                let body = serde_json::json!({
+                    "query": query,
+                    "limit": limit,
+                    "min_score": min_score,
+                    "author": author,
+                    "tags": tags_vec,
+                });
+                let resp = client.post(url).json(&body).send().await?;
+                if !resp.status().is_success() {
+                    anyhow::bail!("API error: {}", resp.text().await.unwrap_or_default());
+                }
+                let json: serde_json::Value = resp.json().await?;
+                println!("Search results:\n{}", serde_json::to_string_pretty(&json)?);
+                return Ok(());
+            }
+
+            // Local fallback: build in-memory index from current heads
+            info!("Building in-memory index from current data (no API URL set)...");
+            let coords = repo.list_coordinates(None).await?;
+            let mut generator = EmbeddingGenerator::new().map_err(|e| anyhow::anyhow!("Embedding init error: {}", e))?;
+            let store = InMemoryVectorStore::new(VectorConfig::default())
+                .map_err(|e| anyhow::anyhow!("Vector store init error: {}", e))?;
+
+            for coord in &coords {
+                // Reconstruct head state
+                let deltas = repo.get_deltas(&coord.id).await?;
+                if deltas.is_empty() { continue; }
+                let state = if let Some(snapshot) = repo.get_latest_snapshot(&coord.id).await? {
+                    SnapshotManager::reconstruct(&snapshot, &deltas[..])?
+                } else {
+                    let mut s = serde_json::json!({});
+                    for d in &deltas { DeltaEngine::apply_delta(&mut s, &d.ops)?; }
+                    s
+                };
+                // Embed and store
+                let embedding = generator.generate_from_state(&state)
+                    .map_err(|e| anyhow::anyhow!("Embedding error: {}", e))?;
+                let metadata = VectorMetadata::new(coord.id.clone())
+                    .with_author("unknown".to_string());
+                store.store_embedding(&coord.id, embedding, metadata).await
+                    .map_err(|e| anyhow::anyhow!("Vector store error: {}", e))?;
+            }
+
+            // Query embedding and search
+            let q_embed = generator.generate(&query)
+                .map_err(|e| anyhow::anyhow!("Embedding error: {}", e))?;
+            let filter = if author.is_some() || tags.is_some() {
+                Some(VecSearchFilter { author, tags: tags.map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()), created_after: None, created_before: None })
+            } else { None };
+            let mut results = store.search_by_vector(q_embed, limit, filter).await
+                .map_err(|e| anyhow::anyhow!("Search error: {}", e))?;
+            if let Some(min) = min_score { results.retain(|r| r.score >= min); }
+            println!("Top {} results:", results.len());
+            for r in results { println!("  {}  (score: {:.4})", r.coord_id, r.score); }
         }
     }
 
