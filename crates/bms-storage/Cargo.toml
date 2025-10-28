@@ -1,0 +1,19 @@
+[package]
+name = "bms-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+bms-core = { path = "../bms-core", features = ["sqlx-support"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+sqlx = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+json-patch = { workspace = true }

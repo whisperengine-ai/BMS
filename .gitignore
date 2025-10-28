@@ -1,0 +1,110 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock (keep for binaries, ignore for libraries)
+# Uncomment if this becomes a library crate:
+# Cargo.lock
+
+# Database files (SQLite)
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+demo.db
+test.db
+bms.db
+
+# BMS-specific storage
+objects/
+chroma/
+qdrant_data/
+snapshots/
+
+# Editor and IDE files
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*.swn
+*~
+.vim/
+*.kate-swp
+.project
+.classpath
+.settings/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# Test and coverage artifacts
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+coverage/
+tarpaulin-report.html
+lcov.info
+
+# Logs
+*.log
+logs/
+*.out
+
+# Backup and temporary files
+*.bak
+*.tmp
+*.temp
+~*
+.#*
+\#*#
+
+# Documentation build artifacts
+book/
+mdbook/
+target/doc/
+
+# Benchmark results
+criterion/
+benchmarks/*.json
+
+# Python (if OCR/HRM scripts added later)
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+env/
+*.egg-info/
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Release artifacts
+*.tar.gz
+*.zip
+dist/
+releases/

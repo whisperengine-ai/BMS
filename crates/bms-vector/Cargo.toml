@@ -1,0 +1,17 @@
+[package]
+name = "bms-vector"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+bms-core = { path = "../bms-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+qdrant-client = { workspace = true }
+tracing = { workspace = true }

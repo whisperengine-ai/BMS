@@ -1,0 +1,25 @@
+[package]
+name = "bms-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bms-api"
+path = "src/main.rs"
+
+[dependencies]
+bms-core = { path = "../bms-core", features = ["sqlx-support"] }
+bms-storage = { path = "../bms-storage" }
+bms-vector = { path = "../bms-vector" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }

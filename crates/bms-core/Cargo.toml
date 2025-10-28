@@ -1,0 +1,28 @@
+[package]
+name = "bms-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+sha3 = { workspace = true }
+base32 = { workspace = true }
+ed25519-dalek = { workspace = true }
+json-patch = { workspace = true }
+jsonptr = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+hex = "0.4"
+sqlx = { workspace = true, optional = true }
+
+[features]
+default = []
+sqlx-support = ["sqlx"]
+
+[dev-dependencies]
+criterion = { workspace = true }
